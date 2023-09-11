@@ -32,7 +32,7 @@ class SimplifyResults(NamedTuple):
 
     graph: nx.DiGraph
     widows: Set[Variable]
-    redundant: Set[Variable]
+    # redundant: Set[Variable]
 
 
 def simplify_latent_dag(graph: nx.DiGraph, tag: Optional[str] = None):
@@ -42,12 +42,12 @@ def simplify_latent_dag(graph: nx.DiGraph, tag: Optional[str] = None):
 
     _ = transform_latents_with_parents(graph, tag=tag)
     _, widows = remove_widow_latents(graph, tag=tag)
-    _, redundant = remove_redundant_latents(graph, tag=tag)
+    # _, redundant = remove_redundant_latents(graph, tag=tag)
 
     return SimplifyResults(
         graph=graph,
         widows=widows,
-        redundant=redundant,
+        # redundant=redundant,
     )
 
 
@@ -177,7 +177,7 @@ def _iter_redundant_latents(graph: nx.DiGraph, *, tag: Optional[str] = None) -> 
         node: set(graph.successors(node)) for node in iter_latents(graph, tag=tag)
     }
     for (left, left_children), (right, right_children) in itt.product(latents.items(), repeat=2):
-        if left_children == right_children and left > right:
+        if left_children == right_children:# and left > right
             # if children are the same, keep the lower sort order node
             yield left
         elif left_children < right_children:

@@ -174,7 +174,8 @@ class NxMixedGraph:
                     rv.add_undirected_edge(a, b)
             else:
                 for child in graph.successors(node):
-                    rv.add_directed_edge(node, child)
+                    if not graph.nodes()[child][tag]:
+                        rv.add_directed_edge(node, child)
         return rv
 
     def to_causaleffect(self) -> CausalEffectGraph:
