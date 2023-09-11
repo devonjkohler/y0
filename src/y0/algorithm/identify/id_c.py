@@ -24,7 +24,8 @@ def idc(identification: Identification) -> Expression:
             return idc(identification.exchange_observation_with_action(condition))
 
     # Run ID algorithm
-    return identify(identification.uncondition()).conditional(identification.outcomes)
+    id_estimand = identify(identification.uncondition())
+    return id_estimand.normalize_marginalize(identification.outcomes)
 
 
 def rule_2_of_do_calculus_applies(identification: Identification, condition: Variable) -> bool:
@@ -48,11 +49,8 @@ def rule_2_of_do_calculus_applies(identification: Identification, condition: Var
     graph = identification.graph
     treatments = identification.treatments
     conditions = treatments | (identification.conditions - {condition})
-
     graph_mod = graph.remove_in_edges(treatments).remove_out_edges(condition)
-
-    judgements = [
+    return all(
         are_d_separated(graph_mod, outcome, condition, conditions=conditions)
         for outcome in identification.outcomes
-    ]
-    return all(judgement.separated for judgement in judgements)
+    )

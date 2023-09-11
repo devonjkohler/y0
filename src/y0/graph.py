@@ -6,8 +6,19 @@ from __future__ import annotations
 
 import itertools as itt
 import json
+import warnings
 from dataclasses import dataclass, field
-from typing import Any, Collection, Iterable, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    Collection,
+    Iterable,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 import networkx as nx
 from networkx.classes.reportviews import NodeView
@@ -20,8 +31,6 @@ __all__ = [
     "CausalEffectGraph",
     "DEFULT_PREFIX",
     "DEFAULT_TAG",
-    "ananke_to_latent_variable_dag",
-    "latent_variable_dag_to_ananke",
     "set_latent",
 ]
 
@@ -46,9 +55,6 @@ class NxMixedGraph:
         graph = NxMixedGraph()
         graph.add_directed_edge('X', 'Y')
         graph.add_undirected_edge('X', 'Y')
-
-        # Convert to an Ananke acyclic directed mixed graph
-        admg_graph = graph.to_admg()
     """
 
     #: A directed graph
@@ -116,10 +122,12 @@ class NxMixedGraph:
         return self.directed.nodes()
 
     def to_admg(self):
-        """Get an :mod:`ananke` ADMG instance."""
+        """Get an ananke ADMG."""
         self.raise_on_counterfactual()
         from ananke.graphs import ADMG
 
+        # update the way stringification happens so this
+        # can support arbitrary variables, like counterfactuals
         return ADMG(
             vertices=[n.name for n in self.nodes()],
             di_edges=[(u.name, v.name) for u, v in self.directed.edges()],
@@ -128,7 +136,7 @@ class NxMixedGraph:
 
     @classmethod
     def from_admg(cls, admg) -> NxMixedGraph:
-        """Create from an ADMG."""
+        """Create from an ananke ADMG."""
         return cls.from_str_edges(
             nodes=admg.vertices,
             directed=admg.di_edges,
@@ -198,33 +206,72 @@ class NxMixedGraph:
         return rv
 
     def draw(
-        self, ax=None, title: Optional[str] = None, prog: str = "dot", latex: bool = True
+        self, ax=None, title: Optional[str] = None, prog: Optional[str] = None, latex: bool = True
     ) -> None:
         """Render the graph using matplotlib.
 
         :param ax: Axis to draw on (if none specified, makes a new one)
         :param title: The optional title to show with the graph
-        :param prog: The pydot program to use, like dot, neato, etc.
+        :param prog: The pydot program to use, like dot, neato, osage, etc.
+            If none is given, uses osage for small graphs and dot for larger ones.
         :param latex: Parse string variables as y0 if possible to make pretty latex output
         """
         import matplotlib.pyplot as plt
 
-        layout = nx.nx_pydot.graphviz_layout(self.joint(), prog=prog)
+        if prog is None:
+            if self.directed.number_of_nodes() > 6:
+                prog = "dot"
+            else:
+                prog = "osage"
+
+        layout = _layout(self, prog=prog)
         u_proxy = nx.DiGraph(self.undirected.edges)
         labels = None if not latex else {node: _get_latex(node) for node in self.directed}
 
         if ax is None:
             ax = plt.gca()
-        nx.draw_networkx_nodes(self.directed, pos=layout, node_color="white", node_size=350, ax=ax)
-        nx.draw_networkx_labels(self.directed, pos=layout, ax=ax, labels=labels)
-        nx.draw_networkx_edges(self.directed, pos=layout, edge_color="b", ax=ax)
+
+        # TODO choose sizes based on size of axis
+        node_size = 1_500
+        node_size_offset = 500
+        line_widths = 2
+        margins = 0.3
+        font_size = 20
+        arrow_size = 20
+        radius = 0.3
+
+        nx.draw_networkx_nodes(
+            self.directed,
+            pos=layout,
+            node_color="white",
+            node_size=node_size,
+            edgecolors="black",
+            linewidths=line_widths,
+            ax=ax,
+            margins=margins,
+        )
+        nx.draw_networkx_labels(
+            self.directed, pos=layout, ax=ax, labels=labels, font_size=font_size
+        )
+        nx.draw_networkx_edges(
+            self.directed,
+            pos=layout,
+            edge_color="black",
+            ax=ax,
+            node_size=node_size + node_size_offset,
+            width=line_widths,
+            arrowsize=arrow_size,
+        )
         nx.draw_networkx_edges(
             u_proxy,
             pos=layout,
+            node_size=node_size + node_size_offset,
             ax=ax,
-            connectionstyle="arc3, rad=0.2",
+            style=":",
+            width=line_widths,
+            connectionstyle=f"arc3, rad={radius}",
             arrowstyle="-",
-            edge_color="r",
+            edge_color="grey",
         )
 
         if title:
@@ -369,6 +416,24 @@ class NxMixedGraph:
             undirected=_exclude_adjacent(self.undirected, vertices),
         )
 
+    def get_intervened_ancestors(self, interventions, outcomes) -> Set[Variable]:
+        """Get the ancestors of outcomes in a graph that has been intervened on.
+
+        :param interventions: a set of interventions in the graph
+        :param outcomes: a set of outcomes in the graph
+        :returns: Set of nodes
+        """
+        return self.remove_in_edges(interventions).ancestors_inclusive(outcomes)
+
+    def get_no_effect_on_outcomes(self, interventions, outcomes) -> Set[Variable]:
+        """Find nodes in the graph which have no effect on the outcomes.
+
+        :param interventions: a set of interventions in the graph
+        :param outcomes: a set of outcomes in the graph
+        :returns: Set of nodes
+        """
+        return self.nodes() - interventions - self.get_intervened_ancestors(interventions, outcomes)
+
     def remove_nodes_from(self, vertices: Union[Variable, Iterable[Variable]]) -> NxMixedGraph:
         """Return a subgraph that does not contain any of the specified vertices.
 
@@ -400,21 +465,122 @@ class NxMixedGraph:
         sources = _ensure_set(sources)
         return _ancestors_inclusive(self.directed, sources)
 
+    def descendants_inclusive(self, sources: Union[Variable, Iterable[Variable]]) -> set[Variable]:
+        """Descendants of a set include the set itself."""
+        sources = _ensure_set(sources)
+        return _descendants_inclusive(self.directed, sources)
+
     def topological_sort(self) -> Iterable[Variable]:
         """Get a topological sort from the directed component of the mixed graph."""
         return nx.topological_sort(self.directed)
 
-    def connected_components(self) -> Iterable[set[Variable]]:
-        """Iterate over the connected components in the undirected graph."""
-        return nx.connected_components(self.undirected)
-
     def get_c_components(self) -> list[frozenset[Variable]]:
-        """Get the C-components in the undirected portion of the graph."""
-        return [frozenset(c) for c in self.connected_components()]
+        """Get the co-components (i.e., districts) in the undirected portion of the graph."""
+        warnings.warn("use NxMixedGraph.districts()", DeprecationWarning, stacklevel=2)
+        return list(self.districts())
+
+    def districts(self) -> set[frozenset[Variable]]:
+        """Get the districts."""
+        return {frozenset(c) for c in nx.connected_components(self.undirected)}
+
+    def get_district(self, node: Variable) -> frozenset[Variable]:
+        """Get the district the node is in."""
+        for district in self.districts():
+            if node in district:
+                return district
+        raise KeyError(f"{node} not found in graph")
 
     def is_connected(self) -> bool:
         """Return if there is only a single connected component in the undirected graph."""
         return nx.is_connected(self.undirected)
+
+    def intervene(self, variables: Set[Intervention]) -> NxMixedGraph:
+        """Intervene on the given variables.
+
+        :param variables: A set of interventions
+        :returns: A graph that has been intervened on the given variables, with edges into the intervened nodes removed
+        """
+        return self.from_edges(
+            nodes=[node.intervene(variables) for node in self.nodes()],
+            directed=[
+                (u.intervene(variables), v.intervene(variables))
+                for u, v in self.directed.edges()
+                if _node_not_an_intervention(v, variables)
+            ],
+            undirected=[
+                (u.intervene(variables), v.intervene(variables))
+                for u, v in self.undirected.edges()
+                if _node_not_an_intervention(u, variables)
+                and _node_not_an_intervention(v, variables)
+            ],
+        )
+
+    def get_markov_pillow(self, nodes: Collection[Variable]) -> Set[Variable]:
+        """For each district, intervene on the domain of each parent not in the district."""
+        parents_of_district: Set[Variable] = set()
+        for node in nodes:
+            parents_of_district |= set(self.directed.predecessors(node))
+        return parents_of_district - set(nodes)
+
+    def get_markov_blanket(self, nodes: Union[Variable, Iterable[Variable]]) -> Set[Variable]:
+        """Get the Markov blanket for a set of nodes.
+
+        The Markov blanket in a directed graph is the union of the parents, children,
+        and parents of children of a given node.
+
+        :param nodes: A node or nodes to get the Markov blanket from
+        :return: A set of variables comprising the Markov blanket
+        """
+        if isinstance(nodes, Variable):
+            nodes = {nodes}
+        else:
+            nodes = set(nodes)
+        blanket = set()
+        for node in nodes:
+            blanket.update(self.directed.predecessors(node))
+            for successor in self.directed.successors(node):
+                blanket.add(successor)
+                blanket.update(self.directed.predecessors(successor))
+        return blanket.difference(nodes)
+
+    def disorient(self) -> nx.Graph:
+        """Return a graph with all edges converted to a flat undirected graph."""
+        rv = nx.Graph()
+        rv.add_nodes_from(self.nodes())
+        rv.add_edges_from(self.directed.edges())
+        rv.add_edges_from(self.undirected.edges())
+        return rv
+
+    def pre(
+        self,
+        nodes: Union[Variable, Iterable[Variable]],
+        topological_sort_order: Optional[Sequence[Variable]] = None,
+    ) -> list[Variable]:
+        """Find all nodes prior to the given set of nodes under a topological sort order.
+
+        :param nodes: iterable of nodes.
+        :param topological_sort_order: A valid topological sort order. If none given, calculates from the graph.
+        :return: list corresponding to the order up until the given nodes.
+            This does not include any of the nodes from the query.
+        """
+        if not topological_sort_order:
+            topological_sort_order = list(self.topological_sort())
+        node_set = _ensure_set(nodes)
+        pre = []
+        for node in topological_sort_order:
+            if node in node_set:
+                break
+            pre.append(node)
+        return pre
+
+
+def _node_not_an_intervention(node: Variable, interventions: Set[Intervention]) -> bool:
+    """Confirm that node is not an intervention."""
+    if isinstance(node, (Intervention, CounterfactualVariable)):
+        raise TypeError(
+            "this shouldn't happen since the graph should not have interventions as nodes"
+        )
+    return (+node not in interventions) and (-node not in interventions)
 
 
 def _ancestors_inclusive(graph: nx.DiGraph, sources: set[Variable]) -> set[Variable]:
@@ -422,6 +588,13 @@ def _ancestors_inclusive(graph: nx.DiGraph, sources: set[Variable]) -> set[Varia
         itt.chain.from_iterable(nx.algorithms.dag.ancestors(graph, source) for source in sources)
     )
     return sources | ancestors
+
+
+def _descendants_inclusive(graph: nx.DiGraph, sources: set[Variable]) -> set[Variable]:
+    descendants = set(
+        itt.chain.from_iterable(nx.algorithms.dag.descendants(graph, source) for source in sources)
+    )
+    return sources | descendants
 
 
 def _include_adjacent(
@@ -447,43 +620,6 @@ def _exclude_adjacent(
     graph: nx.Graph, vertices: set[Variable]
 ) -> Collection[Tuple[Variable, Variable]]:
     return [(u, v) for u, v in graph.edges() if u not in vertices and v not in vertices]
-
-
-def ananke_to_latent_variable_dag(
-    graph,
-    prefix: Optional[str] = None,
-    start: int = 0,
-    tag: Optional[str] = None,
-) -> nx.DiGraph:
-    """Convert an ADMG to a latent variable DAG.
-
-    :param graph: An ADMG
-    :type graph: ananke.graphs.ADMG
-    :param prefix: The prefix for latent variables. If none, defaults to :data:`y0.graph.DEFAULT_PREFIX`.
-    :param start: The starting number for latent variables (defaults to 0, could be changed to 1 if desired)
-    :param tag: The key for node data describing whether it is latent.
-        If None, defaults to :data:`y0.graph.DEFAULT_TAG`.
-    :return: A latent variable DAG.
-    """
-    return _latent_dag(
-        graph.di_edges,
-        graph.bi_edges,
-        prefix=prefix,
-        start=start,
-        tag=tag,
-    )
-
-
-def latent_variable_dag_to_ananke(graph: nx.DiGraph, *, tag: Optional[str] = None):
-    """Convert a latent variable DAG to an ADMG.
-
-    :param graph: A latent variable directed acyclic graph (LV-DAG)
-    :param tag: The key for node data describing whether it is latent.
-        If None, defaults to :data:`y0.graph.DEFAULT_TAG`.
-    :return: An ADMG
-    :rtype: ananke.graphs.ADMG
-    """
-    return NxMixedGraph.from_latent_variable_dag(graph, tag=tag).to_admg()
 
 
 def _latent_dag(
@@ -563,3 +699,130 @@ def _ensure_set(vertices: Union[Variable, Iterable[Variable]]) -> set[Variable]:
     if any(isinstance(v, Intervention) for v in rv):
         raise TypeError("can not use interventions here")
     return rv
+
+
+def _layout(self, prog):
+    joint = self.joint()
+    try:
+        layout = nx.nx_agraph.pygraphviz_layout(joint, prog=prog)
+    except ImportError:
+        pass
+    else:
+        return layout
+    try:
+        layout = nx.nx_pydot.pydot_layout(joint, prog=prog)
+    except ImportError:
+        pass
+    else:
+        return layout
+    return nx.spring_layout(joint)
+
+
+def is_a_fixable(graph: NxMixedGraph, treatments: Union[Variable, Collection[Variable]]) -> bool:
+    """Check if the treatments are a-fixable.
+
+    A treatment is said to be a-fixable if it can be fixed by removing a single directed edge from the graph.
+    In other words, a treatment is a-fixable if it has exactly one descendant in its district.
+
+    This code was adapted from :mod:`ananke` ananke code at:
+    https://gitlab.com/causal/ananke/-/blob/dev/ananke/estimation/counterfactual_mean.py?ref_type=heads#L58-65
+
+    :param graph: A NxMixedGraph
+    :param treatments: A list of treatments
+    :raises NotImplementedError: a-fixability on multiple treatments is an open research question
+    :returns: bool
+    """
+    if not isinstance(treatments, Variable):
+        raise NotImplementedError(
+            "a-fixability on multiple treatments is an open research question"
+        )
+    descendants = graph.descendants_inclusive(treatments)
+    descendants_in_district = graph.get_district(treatments).intersection(descendants)
+    return 1 == len(descendants_in_district)
+
+
+def is_p_fixable(graph: NxMixedGraph, treatments: Union[Variable, Collection[Variable]]) -> bool:
+    """Check if the treatments are p-fixable.
+
+    This code was adapted from :mod:`ananke` ananke code at:
+    https://gitlab.com/causal/ananke/-/blob/dev/ananke/estimation/counterfactual_mean.py?ref_type=heads#L85-92
+
+    :param graph: A NxMixedGraph
+    :param treatments: A list of treatments
+    :raises NotImplementedError: p-fixability on multiple treatments is an open research question
+    :returns: bool
+    """
+    if not isinstance(treatments, Variable):
+        raise NotImplementedError(
+            "p-fixability on multiple treatments is an open research question"
+        )
+    children = set(graph.directed.successors(treatments))
+    children_in_district = graph.get_district(treatments).intersection(children)
+    return 0 == len(children_in_district)
+
+
+def is_markov_blanket_shielded(graph: NxMixedGraph) -> bool:
+    """Check if the ADMG is a Markov blanket shielded.
+
+    Being Markov blanket (Mb) shielded means that two vertices are non-adjacent
+    only when they are absent from each others' Markov blankets.
+
+    This code was adapted from :mod:`ananke` ananke code at:
+    https://gitlab.com/causal/ananke/-/blob/dev/ananke/graphs/admg.py?ref_type=heads#L381-403
+
+    :param graph: A NxMixedGraph
+    :returns: bool
+    """
+    # Iterate over all pairs of vertices
+    for u, v in itt.combinations(graph.nodes(), 2):
+        # Check if the pair is not adjacent
+        if not (
+            any(
+                [
+                    graph.directed.has_edge(u, v),
+                    graph.directed.has_edge(v, u),
+                    graph.undirected.has_edge(u, v),
+                ]
+            )
+        ):
+            # If one is in the Markov blanket of the other, then it is not mb-shielded
+            if _markov_blanket_overlap(graph, u, v):
+                return False
+    return True
+
+
+def get_district_and_predecessors(
+    graph: NxMixedGraph,
+    nodes: Iterable[Variable],
+    topological_sort_order: Optional[Sequence[Variable]] = None,
+):
+    """Get the union of district, predecessors and predecessors of district for a given set of nodes.
+
+    This code was adapted from :mod:`ananke` ananke code at:
+    https://gitlab.com/causal/ananke/-/blob/dev/ananke/graphs/admg.py?ref_type=heads#L96-117
+
+    :param graph: A NxMixedGraph
+    :param nodes: List of nodes
+    :param topological_sort_order: A valid topological sort order
+
+    :return: Set corresponding to union of district, predecessors and predecessors of district of a given set of nodes
+    """
+    if not topological_sort_order:
+        topological_sort_order = list(graph.topological_sort())
+
+    # Get the subgraph corresponding to the nodes and nodes prior to them
+    pre = graph.pre(nodes, topological_sort_order)
+    sub_graph = graph.subgraph(pre + list(nodes))
+
+    result: Set[Variable] = set()
+    for node in nodes:
+        result.update(sub_graph.get_district(node))
+    for node in result.copy():
+        result.update(sub_graph.directed.predecessors(node))
+    return result - set(nodes)
+
+
+def _markov_blanket_overlap(graph: NxMixedGraph, u: Variable, v: Variable) -> bool:
+    return u in get_district_and_predecessors(graph, [v]) or v in get_district_and_predecessors(
+        graph, [u]
+    )

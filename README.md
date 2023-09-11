@@ -108,6 +108,8 @@ unimplemented for the last 15 years of publications including:
 |-----------|-----------------------------------------------------------------------------|
 | ID        | [Shpitser and Pearl, 2006](https://dl.acm.org/doi/10.5555/1597348.1597382)  |
 | IDC       | [Shpitser and Pearl, 2008](https://www.jmlr.org/papers/v9/shpitser08a.html) |
+| ID*       | [Shpitser and Pearl, 2012](https://arxiv.org/abs/1206.5294)                 |
+| IDC*      | [Shpitser and Pearl, 2012](https://arxiv.org/abs/1206.5294)                 |
 
 Apply an algorithm to an ADMG and a causal query to generate an estimand
 represented in the DSL like:
@@ -153,8 +155,23 @@ license](https://github.com/y0-causal-inference/y0/blob/master/LICENSE).
 
 ### 📖 Citation
 
-We hope to publish an application note on `y0` in 2022. In the meantime, you
-can cite this software using the Zenodo DOI (see badge above).
+Before we publish an application note on `y0`, you can cite this software
+via our Zenodo record (also see the badge above):
+
+```bibtex
+@software{y0,
+  author       = {Charles Tapley Hoyt and
+                  Jeremy Zucker and
+                  Marc-Antoine Parent},
+  title        = {y0-causal-inference/y0},
+  month        = jun,
+  year         = 2021,
+  publisher    = {Zenodo},
+  version      = {v0.1.0},
+  doi          = {10.5281/zenodo.4950768},
+  url          = {https://doi.org/10.5281/zenodo.4950768}
+}
+```
 
 ### 🙏 Supporters
 

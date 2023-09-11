@@ -15,14 +15,13 @@ import click
 import networkx as nx
 from more_click import verbose_option
 from tabulate import tabulate
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from y0.algorithm.identify import Identification, Unidentifiable, identify
 from y0.algorithm.simplify_latent import simplify_latent_dag
 from y0.complexity import complexity
 from y0.dsl import Expression, P, Variable
 from y0.graph import DEFAULT_TAG, NxMixedGraph
-from y0.identify import is_identifiable
 from y0.mutate import canonicalize
 from y0.util.combinatorics import powerset
 
@@ -175,7 +174,6 @@ def _get_result(
 
     # Check if the ADMG is identifiable under the (simple) causal query
     query = P(effect @ ~cause)
-    identifiable = is_identifiable(admg, query)
     try:
         estimand: Optional[Expression] = canonicalize(
             identify(Identification.from_expression(graph=admg, query=query))
@@ -184,7 +182,7 @@ def _get_result(
         estimand = None
 
     return Result(
-        identifiable,
+        estimand is not None,
         estimand=estimand,
         pre_nodes=pre_nodes,
         pre_edges=pre_edges,
@@ -310,7 +308,7 @@ def print_results(results: List[Result], file=None) -> None:
         )
         for i, result in enumerate(results, start=1)
     ]
-    print(
+    print(  # noqa:T201
         tabulate(rows, headers=["Row", "ID?", "Node Simp.", "Edge Simp.", "N", "Latents"]),
         file=file,
     )
